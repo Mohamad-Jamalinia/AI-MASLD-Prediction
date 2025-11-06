@@ -1,6 +1,6 @@
 # Artificial Intelligence-based prediction of Metabolic Dysfunction-Associated Steatotic Liver Disease
 
-This repository contains the scripts used for data preprocessing, model development, and performance evaluation of machine learning algorithms trained on clinical and laboratory data to predict MASLD risk.
+This repository contains the scripts used for data preprocessing, model development, and performance evaluation of artificial intelligence algorithms trained on clinical and laboratory data to predict MASLD risk.
 
 ## Repository Structure
 - `main_script.py`: Complete analysis workflow
