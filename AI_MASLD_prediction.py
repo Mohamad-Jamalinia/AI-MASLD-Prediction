@@ -362,6 +362,150 @@ results_df = pd.DataFrame(results).transpose()
 results_df.to_csv("model_evaluation.csv")
 print(results_df)
 
+"""## Sensitivity analysis for top-perfoming algorithms (Cross-validation strategy)"""
+n_splits = 5
+cv = StratifiedKFold(n_splits=n_splits, random_state=42)
+
+# Storage for results
+fold_results = []  # will contain one row per fold per classifier
+summary_results = []  # aggregated summary per classifier
+
+# Helper function: compute metrics on test set
+def compute_metrics(y_true, y_pred, y_score=None, pos_label=1):
+    # Basic metrics
+    auc = np.nan
+    if y_score is not None:
+        try:
+            auc = roc_auc_score(y_true, y_score)
+        except Exception:
+            # fallback: if y_score is shape (n_samples, n_classes) pick positive column
+            try:
+                auc = roc_auc_score(y_true, y_score[:, 1])
+            except Exception:
+                auc = np.nan
+    f1 = f1_score(y_true, y_pred, pos_label=pos_label)
+    precision = precision_score(y_true, y_pred, pos_label=pos_label)
+    sensitivity = recall_score(y_true, y_pred, pos_label=pos_label)  # recall = sensitivity
+    acc = accuracy_score(y_true, y_pred)
+    # confusion matrix for specificity and NPV
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0,1]).ravel()
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else np.nan
+    npv = tn / (tn + fn) if (tn + fn) > 0 else np.nan
+    ppv = precision  # same as precision
+    return {
+        'AUC': auc,
+        'F1': f1,
+        'Sensitivity': sensitivity,
+        'Specificity': specificity,
+        'PPV': ppv,
+        'NPV': npv,
+        'Accuracy': acc
+    }
+
+# Main loop: stratified k-fold
+for name, clf in classifiers:
+    print(f"Processing classifier: {name}")
+    pipeline = Pipeline(steps=[('preprocessor', preprocessor),
+                               ('classifier', clf)])
+    # list to collect each fold's metrics
+    metrics_list = []
+
+    fold_idx = 0
+    for train_idx, test_idx in cv.split(X, y):
+        fold_idx += 1
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+        # fit
+        pipeline.fit(X_train, y_train)
+
+        # predict labels
+        y_pred = pipeline.predict(X_test)
+
+        # obtain score for AUC: try predict_proba, then decision_function
+        y_score = None
+        try:
+            # pipeline.named_steps['classifier'] may be wrapped in pipeline; use pipeline.predict_proba
+            y_score = pipeline.predict_proba(X_test)
+            # if binary, keep positive class column
+            if isinstance(y_score, np.ndarray) and y_score.ndim == 2:
+                y_score = y_score[:, 1]
+        except Exception:
+            # try decision_function
+            try:
+                y_score = pipeline.decision_function(X_test)
+            except Exception:
+                y_score = None
+
+        # compute metrics
+        metrics = compute_metrics(y_test.values, y_pred, y_score=y_score, pos_label=1)
+        metrics.update({
+            'Classifier': name,
+            'Fold': fold_idx,
+            'Train_Size': len(train_idx),
+            'Test_Size': len(test_idx)
+        })
+        metrics_list.append(metrics)
+        fold_results.append(metrics)
+
+    # aggregate summary (mean ± sd) across folds for this classifier
+    df_metrics = pd.DataFrame(metrics_list)
+    summary = {
+        'Classifier': name,
+        'AUC_mean': df_metrics['AUC'].mean(),
+        'AUC_std': df_metrics['AUC'].std(),
+        'F1_mean': df_metrics['F1'].mean(),
+        'F1_std': df_metrics['F1'].std(),
+        'Sensitivity_mean': df_metrics['Sensitivity'].mean(),
+        'Sensitivity_std': df_metrics['Sensitivity'].std(),
+        'Specificity_mean': df_metrics['Specificity'].mean(),
+        'Specificity_std': df_metrics['Specificity'].std(),
+        'PPV_mean': df_metrics['PPV'].mean(),
+        'PPV_std': df_metrics['PPV'].std(),
+        'NPV_mean': df_metrics['NPV'].mean(),
+        'NPV_std': df_metrics['NPV'].std(),
+        'Accuracy_mean': df_metrics['Accuracy'].mean(),
+        'Accuracy_std': df_metrics['Accuracy'].std()
+    }
+    summary_results.append(summary)
+
+# Save results
+folds_df = pd.DataFrame(fold_results)
+summary_df = pd.DataFrame(summary_results)
+
+# Format summary metrics as "mean (± sd)" for readability 
+def mean_sd_format(mean, sd):
+    if np.isnan(mean):
+        return "nan"
+    return f"{mean:.3f} (\u00B1 {sd:.3f})"
+
+readable_summary = []
+for _, row in summary_df.iterrows():
+    readable_summary.append({
+        'Classifier': row['Classifier'],
+        'AUC (mean ± SD)': mean_sd_format(row['AUC_mean'], row['AUC_std']),
+        'F1 (mean ± SD)': mean_sd_format(row['F1_mean'], row['F1_std']),
+        'Sensitivity (mean ± SD)': mean_sd_format(row['Sensitivity_mean'], row['Sensitivity_std']),
+        'Specificity (mean ± SD)': mean_sd_format(row['Specificity_mean'], row['Specificity_std']),
+        'PPV (mean ± SD)': mean_sd_format(row['PPV_mean'], row['PPV_std']),
+        'NPV (mean ± SD)': mean_sd_format(row['NPV_mean'], row['NPV_std']),
+        'Accuracy (mean ± SD)': mean_sd_format(row['Accuracy_mean'], row['Accuracy_std'])
+    })
+
+readable_summary_df = pd.DataFrame(readable_summary)
+
+# Save both detailed fold-level results and the summarized table
+folds_df.to_csv('model_fold_metrics_MASLD_total.csv', index=False)
+summary_df.to_csv('model_summary_raw_MASLD_total.csv', index=False)
+readable_summary_df.to_csv('model_summary_metrics_MASLD_total.csv', index=False)
+
+print("Saved:")
+print("- Detailed fold metrics -> model_fold_metrics.csv")
+print("- Raw numeric summary -> model_summary_raw.csv")
+print("- Readable summary -> model_summary_metrics.csv")
+
+# show summary
+print(readable_summary_df.sort_values(by='AUC (mean ± SD)', ascending=False))
 """## ROC Curve Analysis"""
 
 # Set seaborn style
